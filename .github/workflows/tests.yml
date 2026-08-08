@@ -26,6 +26,12 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
+      # sounddevice binds the PortAudio system library at import, not at first use, and
+      # tobias/tts/__init__.py imports playback eagerly — so even a test that touches nothing but
+      # numpy fails to collect without it. No audio device is needed, just the library.
+      - name: Install PortAudio
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+
       # The whole requirements file, deliberately. The import graph is not guessable — importing
       # tobias.llm.sentences, which is pure stdlib, still pulls torch and transformers in through
       # the package __init__ — so a hand-picked subset would rot silently and fail confusingly.
