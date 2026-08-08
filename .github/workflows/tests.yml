@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A force-push to a PR should cancel the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    # Named explicitly because this string is the required status check in main's branch
+    # protection. Rename it and every PR blocks, waiting for a check that never reports.
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # The whole requirements file, deliberately. The import graph is not guessable — importing
+      # tobias.llm.sentences, which is pure stdlib, still pulls torch and transformers in through
+      # the package __init__ — so a hand-picked subset would rot silently and fail confusingly.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e . --no-deps
+
+      # No OPENAI_API_KEY and no .env here. Nothing in the suite may reach the network: the graph
+      # is patched with a fake chat model, and a test that calls the real API is a broken test.
+      - name: Test
+        run: pytest tests -q
