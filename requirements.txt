@@ -1,0 +1,17 @@
+faster-whisper>=1.1
+silero-vad>=5.1
+kokoro>=0.9
+langgraph>=1.2
+langchain-openai>=1.4
+sounddevice>=0.5
+numpy>=2.0
+pydantic-settings>=2.7
+pytest>=8.0
+
+# Kokoro is a torch model, and PyPI's default torch on Windows is CPU-only. CUDA 12 is
+# deliberate: it matches the runtime CTranslate2 bundles, so whisper and kokoro do not load
+# conflicting cuBLAS/cuDNN DLLs in one process. The +cu126 tag is required — pip considers
+# a plain `torch==2.13.0` already satisfied by an installed 2.13.0+cpu and does nothing.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.13.0+cu126
+torchaudio==2.11.0+cu126
