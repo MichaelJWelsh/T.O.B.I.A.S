@@ -91,6 +91,12 @@ Silero VAD (CPU, ~2MB) segments the 16kHz mic stream into utterances; faster-whi
 
 Silero v5 requires **exactly 512-sample frames at 16kHz**; that constant is load-bearing, not a tuning knob.
 
+`listen()` only yields utterances **addressed to him**. That gate is deliberately *not* in `vad.py`: the VAD answers "is this speech" from 32ms of audio and knows nothing of words, while addressing needs the transcript, so putting it there would make the VAD depend on whisper. `wake.py` does it on the finished transcript, and the sentence naming him marks where the request starts — anything before it was not meant for him and is dropped.
+
+Checking the transcript rather than running a wake-word engine (openWakeWord, Porcupine) is deliberate and **free**: whisper already runs on every VAD-triggered utterance, so this is a string match on output that existed anyway. An engine would save GPU cycles that are not scarce, in exchange for a dependency and a custom-trained model, since "Tobias" is nobody's stock keyword. Revisit only if the machine is left listening in a room with a television.
+
+`STT_FOLLOW_UP_S` lets a reply skip the wake word, and the window opens **when TOBIAS stops speaking, not when the user does** — otherwise a long answer eats it. No coordination between `stt` and `tts` is needed to achieve that: `listen()` is a generator, so the line after `yield` runs only once the caller has come back for more, which is exactly the moment `speak()` returned. `tests/test_follow_up.py` pins this with a fake clock.
+
 ### llm
 
 `ask()` answers one line and remembers everything said before it. `ask_stream()` does the same but yields each sentence the moment it is complete, so TTS can start speaking before generation finishes:
@@ -170,20 +176,40 @@ The persistence half of this is **already built** — `config.update()` and `sta
 - **Memory**: note-taking in a vector store (**ChromaDB**), switching between and creating conversations, and something better than an unbounded message list for long ones.
 - **Orchestration**: Anthropic-style note-taking plus sub-agents, with the primary LLM staying conversational while background agents work long tasks asynchronously.
 - **Self-knowledge**: **read** access to its own source code. Reading only — nothing in this phase writes to the repo.
-- **Barge-in**: interrupt him mid-sentence and have him stop speaking.
-- **Wake word**: "Tobias" opens the mic, conversation then continues freely, and the wake word is needed again once the exchange has gone quiet for long enough.
+- **Barge-in**: interrupt him mid-sentence and have him stop speaking. This is entangled with echo, below — solve them together or the cheap echo fix forecloses barge-in.
+- ~~**Wake word**~~ — **done**, see the stt section. `STT_WAKE_WORD` gates on the transcript and `STT_FOLLOW_UP_S` reopens the mic for a reply.
 
 `SPEAKS` in `graph.py` exists for this phase — see the llm section.
+
+### echo, and why it is a three-way choice
+
+He hears his own TTS through the speakers; `scripts/test_stt_tts.py` demonstrates it plainly, transcribing himself and repeating forever. The wake word makes this **worse**, not better: he says his own name constantly, so his reply trips his own gate, and `STT_FOLLOW_UP_S` leaves the window open at exactly the wrong moment. Headphones remain the workaround until one of these lands.
+
+1. **Gate the mic while `speak()` runs** and bin whatever queued. Five lines, completely effective — and it makes barge-in *impossible*, because the microphone is deaf precisely when you would interrupt. Do not reach for this if barge-in is still wanted.
+2. **Match the transcript against what was just spoken** and discard it. We know exactly what went to Kokoro, so fuzzy-compare each transcript against the last few seconds of TTS text and drop the ones that match. Costs nothing — both strings already exist — needs no reference-signal alignment, works whatever the room does to the sound, and handles partial pickup if the match is fuzzy rather than exact. It also composes with the other two rather than competing.
+3. **Acoustic echo cancellation** (WebRTC APM, speexdsp). The only one that stops the VAD firing at all, so it saves the wasted transcription the others still pay. Also the most work: the reference signal has to be time-aligned with the mic stream.
+
+**Barge-in should require the wake word too**, and the reason is not the obvious one. Silence cannot trip the VAD — measured, silero scores digital silence at 0.009, hiss 0.056 and mains hum 0.011 against a 0.5 threshold — so an empty room is not the hazard. **His own voice through the speakers is**, and that scores like the speech it is. Note the wake word alone does not close this either, since he says his own name constantly; it wants pairing with option 2.
+
+That choice has a price worth taking deliberately: gating barge-in on words makes it **transcription-gated**, so he keeps talking over you until the word has been heard and recognised. The floor is about **750ms** — 500ms of speech is enough for whisper to return "Tobias" (measured; 300ms yields only "To-" and fails the no-speech gate), plus ~250ms to transcribe a short clip. Stopping itself is instant, since the persistent `OutputStream` can `abort()` mid-sentence; it is the decision that is slow. **Genuinely instant barge-in needs real AEC**, because only option 3 makes it safe to react to voice activity alone.
+
+Barge-in must **not** consume `segments()`, which yields only when an utterance closes and so pays `VAD_SILENCE_MS` on top — three seconds for "Tobias, stop talking" rather than 750ms. It needs its own path that transcribes a partial buffer while speech is still in progress.
+
+Lowering `VAD_SILENCE_MS` during playback is **not** an alternative to that. While he speaks, the main thread is blocked in `stream.write()` and `listen()` is suspended at its `yield`, so nothing is running the detector at all — no VAD setting detects anything when nobody is looking. (It would also not take effect: `segments()` snapshots `hangover_frames` before its loop, unlike `vad_threshold` which it reads per frame. And it must never go through `config.update()`, which would persist a transient tweak to `state.json`.) Even fixed, it is the slower option, because it still waits for the whole utterance to end: ~1.4s for "Tobias, stop talking" against a flat ~750ms for partial transcription.
+
+So barge-in needs a **watcher thread reading frames during playback** — the first genuinely concurrent code in the project. It earns that three times over, because `listen()` is suspended throughout, making the watcher the only consumer in that window: it delivers barge-in, it eats his own echoed voice before `listen()` can transcribe it, and it stops the unbounded mic queue growing at precisely the time it otherwise would. Design all three together.
+
+Option 2 is the one to try first, but know its two failure modes. A genuine interruption that **overlaps** his speech produces a transcript mixing both voices, which may fuzzy-match enough to be discarded — the similarity threshold is the whole design. And a user who legitimately **repeats him** ("Did you say fifteen degrees?") looks exactly like echo, so the comparison must be restricted to a short window after speaking rather than the whole conversation.
 
 **Phase 2** — dockerised minikube REST API on dedicated hardware, CI/CD, vLLM serving, monitoring. A Raspberry Pi runs Silero VAD locally and streams captured utterances to the API over wifi.
 
 Phase 2 prerequisite, before the Dockerfile rather than after it: **move dependency management to `uv`** with a committed `uv.lock`, retiring the loose `requirements.txt` / frozen `requirements.lock` pair. TOBIAS is an application, not a library, so pinning is correct — nothing consumes it, so there are no resolution conflicts to cause, and reproducibility is the whole point of containerising. uv is also far faster at image build time.
 
-Known and deliberately deferred, all phase-2 concerns — **do not pre-solve them**:
+Known and deliberately deferred to phase 2 — **do not pre-solve it**:
 
-- **Echo.** TOBIAS hears his own TTS through the speakers. `scripts/test_stt_tts.py` demonstrates it plainly: on speakers he transcribes himself and repeats forever. Headphones are the phase-1 workaround. The real fix is acoustic echo cancellation, or the cheaper version — gating the mic while `speak()` runs and discarding what queued up meanwhile.
 - **Backpressure.** The mic queue in `stt/vad.py` is unbounded, so audio piles up while transcription and synthesis run, and a slow turn falls behind real time.
-- **Barge-in.** No way to interrupt him mid-sentence.
+
+Echo and barge-in were on this list and have moved up to phase 1.5, where they belong together.
 
 **Streaming LLM output into TTS is already done** — `ask_stream` yields sentences, `speak_stream` pipelines them, both pulled forward from phase 2 because it was the largest latency win available.
 

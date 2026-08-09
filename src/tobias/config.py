@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     # 0.11 — far wider separation than avg_logprob, which a short "yes" can fail on its own.
     stt_max_no_speech: float = 0.1
 
+    # He only answers an utterance that names him. Empty disables the gate entirely, which is
+    # what you want for test_stt.py or a headset where you are the only speaker.
+    stt_wake_word: str = "Tobias"
+    # How long after he finishes replying you can answer back without naming him again. The
+    # window opens when he stops talking, not when you did. 0 always requires the wake word.
+    stt_follow_up_s: float = 20.0
+
     vad_threshold: float = 0.5
     # How long I can pause mid-sentence before I get cut off
     vad_silence_ms: int = 700 
