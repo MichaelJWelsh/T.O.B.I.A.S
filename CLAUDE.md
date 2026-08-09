@@ -66,6 +66,14 @@ All tunables live in `config.py` as fields on `Settings` with sensible defaults,
 
 Read config as `from tobias.config import settings` — do not thread settings through function arguments.
 
+Anything TOBIAS changes about himself goes through `config.update(**changes)`, which mutates the live `settings` singleton **and** writes `state.json`. Both halves are needed: the singleton is read fresh on every prompt render so the change takes effect at once, and the file is what survives the process. Only the named fields are written — never the whole object, which holds the API key.
+
+Source priority, highest first: **init kwargs → real environment variables → `state.json` → `.env` → secrets.**
+
+The personality dials are **deliberately not in `.env` at all**. They are state rather than configuration, because TOBIAS changes them himself, so `state.json` is their only home and `config.py` holds the defaults. Keeping them out of both `.env` and `.example.env` removes the precedence puzzle entirely — there is one writable place and one set of defaults, rather than two files silently disagreeing about the same number.
+
+`state.json` is gitignored and absent until the first change; the JSON source treats a missing file as no settings at all. Delete it to return to the defaults in `config.py`.
+
 ## Modules
 
 ### stt
@@ -104,7 +112,7 @@ Two public functions rather than the usual one, because the contracts genuinely 
 
 `prompts/` is a package rather than a file because later phases add many prompts to a larger graph; today it holds only `primary.py`, and `__init__.py` exports `system_prompt()`.
 
-Personality is **three** 0-10 dials, one per register — `LLM_SARCASM` (comic), `LLM_WARMTH` (social, how he feels about the user), `LLM_ANXIETY` (emotional, how he feels about himself). They do not overlap and none fights another. Tobias is told the dials are his and to discuss them frankly when asked; a later phase lets him change them at runtime.
+Personality is **three** 0-10 dials in `state.json`, one per register — `llm_sarcasm` (comic), `llm_warmth` (social, how he feels about the user), `llm_anxiety` (emotional, how he feels about himself). They do not overlap and none fights another. Tobias is told the dials are his and to discuss them frankly when asked; a later phase lets him change them at runtime.
 
 Everything else about how he talks is **fixed character, not a setting**: British English, calling the user "sir", maximum expressiveness, and maximum disfluency. Stating those as prose ("you think out loud, and it shows") steers the model far better than pinning a dial at 10, which reads as just another number.
 
@@ -158,12 +166,7 @@ Since TOBIAS is itself AGPL-3.0, this is no longer a conflict — GPLv3 code com
 
 - **Tools**: adjust and report its own personality dials; adjust and report VAD settings ("Tobias, calibrate…"); web search and deep research.
 
-Dial changes must survive a restart, which makes the dials **state rather than configuration** and gives TOBIAS a write. Two traps in the obvious implementation:
-
-- **Do not write `.env`.** It holds the API key, it is hand-edited and full of comments a writer would flatten, and it is read once at import — so a rewrite would not take effect anyway. Give the agent its own file. `pydantic_settings` ships `JsonConfigSettingsSource`, and `settings_customise_sources` can layer it *above* the dotenv source, which keeps `settings.llm_sarcasm` working everywhere and leaves `.env` as the seed.
-- **Writing the file is not enough.** `settings` is a module-level singleton built at import, and `system_prompt()` reads it per call — so the tool must mutate the live object as well as persist it, or the new personality only appears after a restart.
-
-Note the asymmetry this creates: VAD settings are genuine configuration and belong in `.env`, while dials are state. Resist the urge to make both work the same way.
+The persistence half of this is **already built** — `config.update()` and `state.json`, see Configuration. A dial tool only has to call it. VAD calibration can use the same mechanism, though note the asymmetry: VAD settings are genuine configuration that happens to be machine-set, while dials are state.
 - **Memory**: note-taking in a vector store (**ChromaDB**), switching between and creating conversations, and something better than an unbounded message list for long ones.
 - **Orchestration**: Anthropic-style note-taking plus sub-agents, with the primary LLM staying conversational while background agents work long tasks asynchronously.
 - **Self-knowledge**: **read** access to its own source code. Reading only — nothing in this phase writes to the repo.

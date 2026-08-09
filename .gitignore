@@ -1,5 +1,7 @@
 .claude/
-.env
+# .env* so any variant or stray backup is covered — .example.env does not match this.
+.env*
 .venv/
 __pycache__/
 *.egg-info/
+state.json

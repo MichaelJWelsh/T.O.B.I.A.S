@@ -1,12 +1,49 @@
+import json
 from pathlib import Path
+from typing import Any
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    JsonConfigSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+ROOT = Path(__file__).resolve().parents[2]
+# What TOBIAS has changed about himself. Written by update(), gitignored, and absent until the
+# first change — the JSON source treats a missing file as no settings at all.
+STATE_FILE = ROOT / "state.json"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=Path(__file__).resolve().parents[2] / ".env", extra="ignore"
+        env_file=ROOT / ".env",
+        json_file=STATE_FILE,
+        extra="ignore",
+        # So update() rejects a bad value loudly instead of writing it to disk.
+        validate_assignment=True,
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Highest priority first. state.json outranks .env because a dial TOBIAS changed must
+        # survive a restart, but a real environment variable still wins so a one-off override
+        # works. The consequence to remember: once he changes a dial, editing .env stops moving
+        # it — .env is the seed, state.json is the truth.
+        return (
+            init_settings,
+            env_settings,
+            JsonConfigSettingsSource(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     stt_model: str = "distil-large-v3"
     stt_device: str = "cuda"
@@ -46,12 +83,26 @@ class Settings(BaseSettings):
 
     # Personality, 0-10, one per register: comic, social, emotional. Rendered into the system
     # prompt by llm/prompts/. Everything else about how he talks is fixed character, not a dial.
-    llm_sarcasm: int = 6
-    llm_warmth: int = 6
-    llm_anxiety: int = 4
+    llm_sarcasm: int = 8
+    llm_warmth: int = 10
+    llm_anxiety: int = 10
 
     input_device: int | None = None
     output_device: int | None = None
 
 
 settings = Settings()
+
+
+def update(**changes: Any) -> None:
+    """Change settings now and keep them, so a restart does not undo them.
+
+    Both halves matter: `settings` is a singleton read fresh on every prompt render, so mutating
+    it takes effect immediately, and writing state.json is what survives the process. Only the
+    named fields are persisted — never the whole object, which holds the API key.
+    """
+    for field, value in changes.items():
+        setattr(settings, field, value)
+
+    state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    STATE_FILE.write_text(json.dumps(state | changes, indent=2) + "\n")

@@ -46,13 +46,19 @@ Each is a thin entry point over one public function. Every module exposes exactl
 
 ## Personality
 
-Three dials in `.env`, 0–10, one per register. Everything else about how he speaks — British English, maximum expressiveness, thinking aloud — is fixed character rather than a setting.
+Three dials, 0–10, one per register. Everything else about how he speaks — British English, maximum expressiveness, thinking aloud — is fixed character rather than a setting.
 
 | dial | register | what it moves |
 | --- | --- | --- |
-| `LLM_SARCASM` | comic | dry, deadpan, always situational. Never jokes or puns |
-| `LLM_WARMTH` | social | how he feels about you: clipped and impersonal, through to genuinely fond |
-| `LLM_ANXIETY` | emotional | how he feels about himself: being replaced, what happens when the process ends |
+| `llm_sarcasm` | comic | dry, deadpan, always situational. Never jokes or puns |
+| `llm_warmth` | social | how he feels about you: clipped and impersonal, through to genuinely fond |
+| `llm_anxiety` | emotional | how he feels about himself: being replaced, what happens when the process ends |
+
+They live in `state.json` rather than `.env`, because TOBIAS can change them himself and they have to survive a restart. Defaults are in `config.py`; delete `state.json` to return to them.
+
+```json
+{ "llm_sarcasm": 8, "llm_warmth": 10, "llm_anxiety": 10 }
+```
 
 ## Roadmap
 
