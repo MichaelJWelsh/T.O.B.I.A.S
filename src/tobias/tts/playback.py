@@ -18,6 +18,18 @@ CHUNK_MS = 100
 
 @cache
 def _stream() -> sd.OutputStream:
+    # Input and output share one index space, so it is easy to point OUTPUT_DEVICE at a
+    # microphone. PortAudio calls that "Invalid number of channels", which sends you reading
+    # about channel counts for an hour. Say what is actually wrong.
+    if settings.output_device is not None:
+        device = sd.query_devices(settings.output_device)
+        if not device["max_output_channels"]:
+            raise ValueError(
+                f"OUTPUT_DEVICE={settings.output_device} is {device['name']!r}, which has no "
+                f"output channels — it is an input device. List the real ones with: "
+                f"python -c \"import sounddevice; print(sounddevice.query_devices())\""
+            )
+
     stream = sd.OutputStream(
         samplerate=SAMPLE_RATE,
         channels=1,

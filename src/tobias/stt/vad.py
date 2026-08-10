@@ -31,6 +31,17 @@ def mic() -> queue.Queue[np.ndarray]:
     reaching the transcriber and stops the queue growing while nobody is draining it.
     """
     global _open
+    # Input and output share one index space, so it is easy to point INPUT_DEVICE at a speaker.
+    # PortAudio's own error for that names the channel count rather than the mistake.
+    if settings.input_device is not None:
+        device = sd.query_devices(settings.input_device)
+        if not device["max_input_channels"]:
+            raise ValueError(
+                f"INPUT_DEVICE={settings.input_device} is {device['name']!r}, which has no "
+                f"input channels — it is an output device. List the real ones with: "
+                f"python -c \"import sounddevice; print(sounddevice.query_devices())\""
+            )
+
     frames: queue.Queue[np.ndarray] = queue.Queue()
     _open = sd.InputStream(
         samplerate=SAMPLE_RATE,

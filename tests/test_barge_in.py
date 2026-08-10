@@ -80,6 +80,34 @@ def test_the_poll_runs_on_the_calling_thread(device):
     assert seen and all(t is caller for t in seen), "GPU work must not move to another thread"
 
 
+NEVER = float("-inf")
+
+
+@pytest.fixture
+def unspoken(monkeypatch):
+    """Reset the "when did he last reply" clock. A sentinel, not a timestamp comparison —
+    time.monotonic() has ~15ms resolution on Windows and a fake device replies inside one tick."""
+    monkeypatch.setattr(TTS, "_spoken_at", NEVER)
+
+
+def test_an_announcement_does_not_open_the_follow_up_window(device, unspoken):
+    # The startup greeting is not a reply. If it moved the clock, the first thing the user said
+    # would skip the wake word — and since every reply reopens the window, a whole session could
+    # then run without ever naming him.
+    TTS.speak("Good evening, sir.")
+    assert TTS.spoken_at() == NEVER, "speak() announces; it does not invite an answer"
+
+
+def test_a_reply_does_open_the_follow_up_window(device, unspoken):
+    speak_stream(iter(["Fifteen degrees, sir."]))
+    assert TTS.spoken_at() > NEVER
+
+
+def test_the_window_opens_even_when_he_is_cut_off(device, unspoken):
+    speak_stream(iter(["one.", "two."]), lambda: True)
+    assert TTS.spoken_at() > NEVER, "being interrupted still ends his turn"
+
+
 def test_barge_in_can_be_switched_off(monkeypatch):
     import threading
 

@@ -1,4 +1,4 @@
-from tobias.llm import ask_stream
+from tobias.llm import ask_stream, interrupted
 from tobias.stt import listen, watching
 from tobias.tts import speak, speak_stream
 
@@ -20,6 +20,7 @@ if __name__ == "__main__":
                 print(f"you > {text}")
                 with watching() as interruption:
                     if speak_stream(shown(ask_stream(text)), interruption):
+                        interrupted()  # he only remembers the part he got to say
                         print("  (interrupted)")
                 print()
                 # A barge-in that carried a request becomes the next one, so it need not be

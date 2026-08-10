@@ -97,7 +97,7 @@ Checking the transcript rather than running a wake-word engine (openWakeWord, Po
 
 `STT_FOLLOW_UP_S` lets a reply skip the wake word. Both ends of that window were wrong at first, and neither is obvious.
 
-It **opens when TOBIAS stops speaking**, which `tts.spoken_at()` records, so a long answer does not eat it. An earlier version inferred that moment from where `listen()` resumed after its `yield` — cute, and correct only while every turn went back through `listen()`. The moment a caller answered a barge-in without doing so, the deadline went stale.
+It **opens when TOBIAS stops replying**, which `tts.spoken_at()` records, so a long answer does not eat it. Only `speak_stream()` moves that clock: `speak()` is an announcement and must not open the window, or the startup greeting lets the first thing the user says skip the wake word — and since every reply reopens the window, a whole session then runs without him ever being named. An earlier version inferred that moment from where `listen()` resumed after its `yield` — cute, and correct only while every turn went back through `listen()`. The moment a caller answered a barge-in without doing so, the deadline went stale.
 
 It **closes against when the reply began, not when its transcript arrived**. `segments()` only yields once an utterance has closed, so comparing against "now" charges the user for however long they spoke plus `VAD_SILENCE_MS` plus the transcription — a seven-second window behaves like five. `listen()` recovers the start time from the length of the audio it was handed. No coordination between `stt` and `tts` is needed to achieve that: `listen()` is a generator, so the line after `yield` runs only once the caller has come back for more, which is exactly the moment `speak()` returned. `tests/test_follow_up.py` pins this with a fake clock.
 
@@ -156,7 +156,22 @@ On the GPU it runs at ~27x realtime (~350 MiB VRAM); on CPU it collapses to ~1.9
 
 ### measured budget
 
-Whisper 2002 MiB + Kokoro 352 MiB = **2354 MiB of 8192**, both resident in one process. A turn costs ~300ms of STT plus ~290ms of TTS, so **~590ms before the LLM contributes anything** — which will dominate once it lands.
+Whisper 2002 MiB + Kokoro 352 MiB = **2354 MiB of 8192**, both resident in one process.
+
+Re-measured once barge-in, the wake word and the follow-up window were all in place, a turn to the first spoken word is roughly:
+
+```
+VAD_SILENCE_MS   700ms   dead time, waiting to be sure the user stopped
+STT              273ms
+LLM             1042ms   to the first complete sentence
+TTS synthesis   ~150ms   for that sentence
+                ------
+                ~2.2s
+```
+
+**The LLM is now over half the turn**, so local tuning has little left to win. The barge-in watcher costs a further **6.7% of playback time** — silero on every frame at ~6% of realtime, which is the price of listening while he speaks, not a defect. It transcribes nothing at all in a quiet room; on speakers it would also pay a transcription per burst of his own echoed voice.
+
+When re-measuring, match the original method or the comparison is meaningless: warm the output device first, use one long sentence for the realtime factor rather than several short ones (per-sentence overhead is fixed), and give each LLM sample a fresh `thread_id` or history growth is what gets measured.
 
 ## Licensing
 
@@ -211,7 +226,11 @@ An interruption that is *only* an order to be quiet carries nothing forward, so 
 
 The symptom of any of them is the same and looks like an STT problem rather than a lifetime problem: "Tobias, what is the weather" arrives as "Tobias, what", the rest turns up as a separate "the weather", and the follow-up window accepts it as a second question.
 
-**An interrupted reply is recorded in full.** Measured: one sentence spoken, 568 characters saved. The model call completes server-side regardless of whether anything consumes the stream, so the checkpointer stores the whole answer and he will later refer to things the user never heard. Fixing it means trimming the stored `AIMessage` to what was actually spoken and marking it interrupted, via `graph().update_state()` — worth doing in this phase, and not yet done.
+**An interrupted reply must be trimmed to what he actually said**, which `llm.interrupted()` does and the caller must call. The model call completes server-side whether or not anything is still consuming the stream, so the checkpointer stores the entire answer even when playback stopped after one sentence — measured at 578 characters recorded against 64 spoken. Left alone he refers back to things the user never heard.
+
+Three details make it work. `ask_stream` records what it yielded, and because the caller pulls lazily that is exactly what was spoken — the generator never runs ahead of the speaker. The replacement `AIMessage` reuses the original's **id**, because `add_messages` merges on id: without it the trim appends a second reply instead of editing the first.
+
+And the note saying he was cut off is a separate `SystemMessage`, **not** text appended to his own reply. Inside the `AIMessage` he reads it as self-narration and explains it away — asked who interrupted him, he answered "not so much an interruption as a self-imposed halt". Stated from outside his voice he gets it right: "that would be you, sir". The general lesson is that a fact about the world does not belong in the assistant's own turn, however clearly it is worded.
 
 Barge-in must **not** consume `segments()`, which yields only when an utterance closes and so pays `VAD_SILENCE_MS` on top — three seconds for "Tobias, stop talking" rather than 750ms. It needs its own path that transcribes a partial buffer while speech is still in progress. That is `stt/interrupt.py`, a **watcher thread** running only while he speaks, and it earns the project's first concurrency three times over: `listen()` is suspended throughout, so the watcher is the only consumer in that window. It delivers barge-in, eats his own echoed voice before `listen()` can transcribe it, and stops the unbounded mic queue growing at precisely the time it otherwise would. A live run leaves **0 frames queued** afterwards, which is all three at once.
 
@@ -231,7 +250,9 @@ Phase 2 prerequisite, before the Dockerfile rather than after it: **move depende
 
 Known and deliberately deferred to phase 2 — **do not pre-solve it**:
 
-- **Backpressure.** The mic queue in `stt/vad.py` is unbounded, so audio piles up while transcription and synthesis run, and a slow turn falls behind real time.
+- **Backpressure.** The mic queue in `stt/vad.py` is unbounded and nothing drops stale frames, so audio piles up whenever no one is draining it. Measured, this is **not yet a problem**: the longest such stretch is STT plus the LLM, about 1.3s or 40 frames, and `listen()` catches up in well under a second at the ~900 frames/s the VAD manages. With barge-in on it returns to zero every turn, because the watcher is draining precisely when the queue used to grow.
+
+  It becomes a problem the moment something runs long while nobody is listening — a tool call, deep research, a background agent. Thirty seconds of that is ~930 frames of room audio to segment and transcribe on resume, and anything said during it arrives half a minute late in the wrong context. The fix is then about four lines: drop the oldest frame in the callback when the queue is full, since stale audio is worse than none. Do not build it before the long-running work exists.
 
 Echo and barge-in were on this list and have moved up to phase 1.5, where they belong together.
 
