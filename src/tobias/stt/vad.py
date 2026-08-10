@@ -1,6 +1,7 @@
 import queue
 from collections import deque
 from collections.abc import Iterator
+from functools import cache
 
 import numpy as np
 import sounddevice as sd
@@ -14,18 +15,39 @@ FRAME_SIZE = 512  # silero v5 accepts nothing else at 16 kHz
 FRAME_MS = FRAME_SIZE / SAMPLE_RATE * 1000
 
 
-def _frames() -> Iterator[np.ndarray]:
+# The live input stream. It MUST stay referenced for as long as it is running: PortAudio keeps
+# calling the callback regardless, so letting Python collect the object is a use-after-free that
+# crashes the process at random and can take the display driver down with it.
+_open: sd.InputStream | None = None
+
+
+@cache
+def mic() -> queue.Queue[np.ndarray]:
+    """The microphone, opened once and left open, feeding one shared queue.
+
+    Two things read it: segments(), and the barge-in poll during playback. They never overlap —
+    listen() is suspended at its yield the whole time TOBIAS is speaking — so whatever the poll
+    consumes is gone before segments() resumes, which is exactly what keeps his own voice from
+    reaching the transcriber and stops the queue growing while nobody is draining it.
+    """
+    global _open
     frames: queue.Queue[np.ndarray] = queue.Queue()
-    with sd.InputStream(
+    _open = sd.InputStream(
         samplerate=SAMPLE_RATE,
         blocksize=FRAME_SIZE,
-        channels=1, 
+        channels=1,
         dtype="float32",
         device=settings.input_device,
         callback=lambda data, *_: frames.put(data[:, 0].copy()),
-    ):
-        while True:
-            yield frames.get()
+    )
+    _open.start()
+    return frames
+
+
+def _frames() -> Iterator[np.ndarray]:
+    frames = mic()
+    while True:
+        yield frames.get()
 
 
 def segments() -> Iterator[np.ndarray]:

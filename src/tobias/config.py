@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # He only answers an utterance that names him. Empty disables the gate entirely, which is
     # what you want for test_stt.py or a headset where you are the only speaker.
     stt_wake_word: str = "Tobias"
+    # Whether naming him while he is talking cuts him off. Costs a transcription every ~600ms of
+    # speech heard during playback, and on speakers he will interrupt himself — see CLAUDE.md.
+    stt_barge_in: bool = True
+    # Speech gathered before the watcher checks it for the wake word. 500ms is enough for whisper
+    # to return "Tobias" (measured); below ~400ms it returns a fragment and the no-speech gate
+    # discards it. Raising this delays every interrupt by the same amount.
+    stt_barge_in_ms: int = 600
     # How long after he finishes replying you can answer back without naming him again. The
     # window opens when he stops talking, not when you did. 0 always requires the wake word.
     stt_follow_up_s: float = 20.0
@@ -92,7 +99,7 @@ class Settings(BaseSettings):
     # prompt by llm/prompts/. Everything else about how he talks is fixed character, not a dial.
     llm_sarcasm: int = 8
     llm_warmth: int = 10
-    llm_anxiety: int = 10
+    llm_anxiety: int = 6
 
     input_device: int | None = None
     output_device: int | None = None
